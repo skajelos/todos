@@ -9,12 +9,50 @@
   --accent: #6366f1;
 }
 
-body {
+html, body {
   background: var(--background);
   color: var(--foreground);
   font-family: sans-serif;
+  overflow: hidden; /* Zabrání scrollování celého webu */
+  height: 100vh;
+  margin: 0;
+  padding: 0;
 }
 
 /* Skrytí scrollbaru bez @apply - tohle je neprůstřelné */
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Takhle si vytuníš scrollbary v celém kanbanu bez chyb */
+@layer base {
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background-color: #0f172a; /* Odpovídá bg-slate-900 */
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: #334155; /* Odpovídá bg-slate-700 */
+    border-radius: 9999px;      /* Odpovídá rounded-full */
+    transition: background-color 0.2s;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: #6366f1; /* Odpovídá bg-indigo-500 */
+  }
+  
+  /* Firefox podpora */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #334155 #0f172a;
+  }
+}
+
+/* Třída pro skrytí scrollbaru tam, kde ho nechceš (třeba v popupu) */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
