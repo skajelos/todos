@@ -17,6 +17,8 @@ html, body {
   height: 100vh;
   margin: 0;
   padding: 0;
+  user-select: none;
+  -webkit-user-select: none; /* Pro Safari */
 }
 
 /* Skrytí scrollbaru bez @apply - tohle je neprůstřelné */
@@ -55,4 +57,19 @@ html, body {
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+input, 
+textarea, 
+[contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+button {
+  cursor: pointer !important;
+}
+
+button:disabled {
+  cursor: not-allowed !important;
 }

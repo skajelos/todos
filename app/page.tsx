@@ -5,6 +5,7 @@
 // dnd: Knihovna pro přetahování úkolů (Drag and Drop).
 import React, { useState, useEffect } from 'react';
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
+import { supabase } from '@/lib/supabase';
 
 // --- [TYPY (TypeScript)] ---
 // Definují "tvar" našich dat, aby editor věděl, co má každý objekt obsahovat.
@@ -49,11 +50,7 @@ const initialData: Data = {
   },
   columnOrder: ['ideas', 'backlog', 'in-progress', 'waiting-room', 'bench', 'done'],
   tasks: {},
-  allTags: [
-    { name: "BUG", color: "#ef4444" },
-    { name: "FEATURE", color: "#3b82f6" },
-    { name: "DESIGN", color: "#ec4899" }
-  ],
+  allTags: [],
 };
 
 // --- [STYLY (Tailwind)] ---
@@ -66,10 +63,12 @@ const STYLES = {
 
 export default function Kanban() {
   // --- [STAV (State)] ---
+  const [user, setUser] = useState<any>(null);
   const [data, setData] = useState<Data | null>(null);
   const [editingTask, setEditingTask] = useState<{ task: Todo, colId: string } | null>(null);
   const [newTagName, setNewTagName] = useState("");
   const [newTagColor, setNewTagColor] = useState("#6366f1");
+  const [isAnonymous, setIsAnonymous] = useState(false);
 
   // Fix pro Next.js: Zajišťuje, aby se Drag&Drop spustil až ve chvíli, kdy je prohlížeč připraven.
   const [enabled, setEnabled] = useState(false);
@@ -95,21 +94,116 @@ export default function Kanban() {
   }, []);
 
   // 2. NAČTENÍ DAT (Při startu z prohlížeče)
-  useEffect(() => {
-    const savedData = localStorage.getItem('vibe-kanban-data');
-    if (savedData) {
-      setData(JSON.parse(savedData));
-    } else {
-      setData(initialData);
-    }
-  }, []);
+  //useEffect(() => {
+  //  const savedData = localStorage.getItem('vibe-kanban-data');
+  //  if (savedData) {
+  //    setData(JSON.parse(savedData));
+  //  } else {
+  //   setData(initialData);
+  // }
+  //}, []);
+
 
   // 3. UKLÁDÁNÍ DAT (Automaticky uloží vše při každé změně stavu 'data')
+  //useEffect(() => {
+  //  if (data) {
+  //    localStorage.setItem('vibe-kanban-data', JSON.stringify(data));
+  // }
+  //}, [data]);
+
+  // 1. NAČTENÍ DAT (Nahraď svůj starý useEffect pro načítání)
+
   useEffect(() => {
-    if (data) {
-      localStorage.setItem('vibe-kanban-data', JSON.stringify(data));
-    }
+    // Zjistíme aktuálního uživatele při startu
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+    });
+
+    // Posloucháme změny (přihlášení/odhlášení)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+
+  useEffect(() => {
+    const loadData = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      if (session?.user) {
+        // Jsme přihlášení - zkusíme cloud
+        const { data: dbData } = await supabase
+          .from('kanban_configs')
+          .select('content')
+          .single();
+
+        if (dbData?.content) {
+          setData(dbData.content);
+          return; // Našli jsme v cloudu, končíme
+        }
+      }
+
+      // Nejsme přihlášení NEBO v cloudu nic není - zkusíme LocalStorage
+      const saved = localStorage.getItem('kanban-data');
+      if (saved) {
+        setData(JSON.parse(saved));
+      } else {
+        setData(initialData);
+      }
+    };
+
+    if (enabled) loadData();
+  }, [enabled]);
+
+  // 2. UKLÁDÁNÍ DAT (Nahraď svůj starý useEffect pro ukládání)
+  useEffect(() => {
+    const saveData = async () => {
+      if (!data) return;
+
+      // 1. VŽDY uložíme do LocalStorage (pro offline/nepřihlášené)
+      localStorage.setItem('kanban-data', JSON.stringify(data));
+
+      // 2. POKUD jsme přihlášení, pošleme to i do Supabase
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        await supabase
+          .from('kanban_configs')
+          .upsert({
+            user_id: session.user.id,
+            content: data,
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'user_id' });
+      }
+    };
+
+    const timeoutId = setTimeout(saveData, 1000);
+    return () => clearTimeout(timeoutId);
   }, [data]);
+
+  const handleSignOut = async () => {
+    // 1. Odhlášení ze Supabase (Google session)
+    const { error } = await supabase.auth.signOut();
+
+    if (error) {
+      console.error("Chyba při odhlašování:", error.message);
+      return;
+    }
+
+    // 2. Vyčištění stavu aplikace na výchozí hodnoty
+    // (Předpokládám, že máš někde definované 'initialData' pro prázdný board)
+    setData(initialData);
+
+    // 3. Volitelné: Vyčištění LocalStorage, aby data nezůstala v prohlížeči
+    localStorage.removeItem('kanban-data');
+
+    // 4. Reset uživatele v aplikaci
+    setUser(null);
+
+    // Tip: reload stránky zajistí úplně čistý start
+    window.location.reload();
+  };
 
   // Bezpečnostní pojistka: Dokud se nenačtou data z localStorage, ukaž jen prázdnou tmu.
   if (!data) return <div className="bg-slate-900 min-h-screen" />;
@@ -280,14 +374,82 @@ export default function Kanban() {
   };
 
   if (!enabled) return null;
+
+  if (!user && !isAnonymous) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4">
+        <div className="max-w-lg w-full text-center space-y-8">
+          <div>
+            <h1 className="text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-purple-400 tracking-tighter mb-4">
+              WHAT TO DO
+            </h1>
+            <p className="text-slate-400 text-lg">
+              Tvůj produktivní vesmír. Přihlas se a měj úkoly vždy po ruce!
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-4">
+            {/* Hlavní lákadlo: Google Login */}
+            <button
+              onClick={() => supabase.auth.signInWithOAuth({ provider: 'google' })}
+              className="w-full bg-white text-black py-4 rounded-2xl font-bold text-xl flex items-center justify-center gap-3 hover:scale-[1.02] transition-transform cursor-pointer"
+            >
+              <img src="https://www.google.com/favicon.ico" className="w-6 h-6" alt="" />
+              Přihlásit se přes Google
+            </button>
+
+            {/* Vedlejší cesta: Local Storage */}
+            <button
+              onClick={() => setIsAnonymous(true)}
+              className="w-full bg-slate-900 text-slate-300 py-4 rounded-2xl font-medium hover:bg-slate-800 transition cursor-pointer border border-white/5"
+            >
+              Pokračovat bez přihlášení (pouze v prohlížeči)
+            </button>
+          </div>
+
+          <p className="text-slate-600 text-xs">
+            Bez přihlášení se data ukládají pouze do vašeho prohlížeče.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-slate-950 text-white p-4 md:p-8">
-      <div className="w-full px-2 md:px-30">
-        <div className="flex flex-col md:flex-row justify-between items-center mb-12 gap-4">
-          <h1 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-purple-400 tracking-tight">
+      {/* Kontejner, který drží šířku celého webu */}
+      <div className="w-fit mx-auto">
+
+        {/* Horní řádek s nadpisem a tlačítkem */}
+        <div className="flex justify-between items-end mb-12 gap-4">
+          <h1 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-purple-400 tracking-tight leading-none">
             WHAT TO DO
           </h1>
+
+          <div className="flex items-center gap-4 select-none">
+            {user ? (
+              <>
+                <span className="text-slate-400 text-sm hidden sm:block">{user.email}</span>
+                <button
+                  type="button"
+                  onClick={handleSignOut} // <--- Tady voláme naši novou funkci
+                  className="text-white/50 hover:text-white border border-white/20 px-4 py-1.5 rounded-full text-xs transition cursor-pointer"
+                >
+                  Odhlásit se
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => supabase.auth.signInWithOAuth({ provider: 'google' })}
+                className="bg-white text-black px-6 py-2 rounded-full font-bold flex items-center gap-2 hover:scale-105 transition-transform cursor-pointer"
+              >
+                <img src="https://www.google.com/favicon.ico" className="w-4 h-4" alt="" />
+                Přihlásit se
+              </button>
+            )}
+          </div>
         </div>
+
 
         <DragDropContext onDragEnd={onDragEnd}>
           <div className="flex gap-6 overflow-x-auto pb-8 items-start">
@@ -339,10 +501,10 @@ export default function Kanban() {
                                   }}
                                   className="mb-3 outline-none"
                                   onClick={() => {
-        if (!snapshot.isDragging) {
-          setEditingTask({ task, colId: column.id });
-        }
-      }}
+                                    if (!snapshot.isDragging) {
+                                      setEditingTask({ task, colId: column.id });
+                                    }
+                                  }}
                                 >
                                   {/* KARTA ÚKOLU */}
                                   <div
@@ -350,7 +512,7 @@ export default function Kanban() {
                                       ? 'bg-slate-900/20 opacity-50 grayscale border-none shadow-none'
                                       : snapshot.isDragging
                                         ? 'cursor-grabbing !scale-[1.02] !rotate-[1.5deg] shadow-2xl ring-2 ring-indigo-500'
-                                        : 'cursor-grab hover:border-indigo-500/50 hover:shadow-lg'
+                                        : 'cursor-pointer hover:border-indigo-500/50 hover:shadow-lg'
                                       }`}
                                   >
                                     {/* PRIORITA (Skryta v Done) */}
@@ -493,7 +655,7 @@ export default function Kanban() {
             {/* ŠTÍTKY SEKCE */}
             <div className="mb-8">
               <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3 block ml-1">
-                Knihovna štítků (kliknutím přidej k úkolu)
+                Knihovna štítků
               </label>
 
               {/* 1. KNIHOVNA GLOBÁLNÍCH ŠTÍTKŮ */}
@@ -516,8 +678,8 @@ export default function Kanban() {
                           // Barva ohraničení: 44% průhlednost
                           borderColor: isAlreadyOnTask ? `${tag.color}33` : `${tag.color}44`
                         }}
-                        className={`text-[11px] font-bold px-3 py-1.5 rounded-lg border transition-all uppercase ${isAlreadyOnTask
-                          ? 'opacity-50 cursor-not-allowed' // Snížíme jen sytost, ale barva zůstane
+                        className={`select-none cursor-pointer text-[11px] font-bold px-3 py-1.5 rounded-lg border transition-all uppercase ${isAlreadyOnTask
+                          ? 'opacity-50 !cursor-not-allowed' // Snížíme jen sytost, ale barva zůstane
                           : 'hover:scale-105 active:scale-95 shadow-sm'
                           }`}
                       >
@@ -557,7 +719,7 @@ export default function Kanban() {
                             });
                           }
                         }}
-                        className="absolute -top-1 -right-1 bg-red-500 text-white text-[8px] rounded-full w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow-lg"
+                        className="cursor-pointer absolute -top-1 -right-1 bg-red-500 text-white text-[8px] rounded-full w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow-lg"
                       >
                         ✕
                       </button>
@@ -581,7 +743,7 @@ export default function Kanban() {
                         const newTags = editingTask.task.tags.filter((_, i) => i !== idx);
                         updateTaskDetail(editingTask.task.id, { tags: newTags });
                       }}
-                      className="hover:text-white transition-colors"
+                      className="cursor-pointer hover:text-white transition-colors"
                     >✕</button>
                   </span>
                 ))}
